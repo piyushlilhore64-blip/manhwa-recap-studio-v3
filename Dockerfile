@@ -10,6 +10,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # ---- System dependencies ----------------------------------------------------
 # Caddy is not in the default Ubuntu 22.04 repos; add the official Caddy apt repo.
+#
+# espeak-ng (offline TTS): edge-tts is the primary engine, but cloud/datacenter
+# IPs get throttled by Microsoft ("edge-tts attempt 1/2 failed" in every job log),
+# and the pipeline's next fallbacks are Piper then espeak-ng. Piper needs a manual
+# binary + voice-model download, so without espeak-ng in the image a throttled
+# wave produced silent panels — and across a whole chapter, a digitally silent
+# video (measured: mean_volume -91 dB). ~3 MB, no model downloads, no network.
+#
+# tesseract-ocr(-eng): last-resort OCR tier used when RapidOCR/PaddleOCR return
+# no confident text (stylised SFX, warped lettering). Without the binary that tier
+# is skipped, so one bad engine result becomes a FAILED frame with no narration.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https \
     && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
@@ -23,6 +34,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     unzip \
     libgl1 libglib2.0-0 \
+    espeak-ng \
+    tesseract-ocr tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Bun (JavaScript runtime) ----------------------------------------------

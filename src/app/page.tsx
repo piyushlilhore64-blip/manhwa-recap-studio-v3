@@ -125,19 +125,25 @@ export default function Home() {
     if (!savedId) return;
 
     fetch(`/api/jobs/${savedId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
+      .then(async (r) => ({ status: r.status, data: r.ok ? await r.json() : null }))
+      .then(({ status, data }) => {
         if (cancelled) return;
-        if (data?.job) {
-          setCurrentJobId(savedId);
-          setView("job");
-        } else {
-          // Job no longer exists (deleted/DB reset) — clear the stale pointer.
+        if (status === 404) {
+          // The job row is really gone (deleted) — clear the stale pointer.
           try {
             localStorage.removeItem("activeJobId");
           } catch {
             // ignore
           }
+          return;
+        }
+        // A readable job, OR a 5xx (DB briefly locked while a render writes,
+        // service warming up): keep the pointer and land on the job view — its
+        // 5s REST polling retries on its own. Clearing it here made a running
+        // job look like it had vanished after a refresh.
+        if (data?.job || status >= 500) {
+          setCurrentJobId(savedId);
+          setView("job");
         }
       })
       .catch(() => {

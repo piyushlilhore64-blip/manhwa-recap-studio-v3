@@ -2423,18 +2423,48 @@ def _run_rapidocr_on_image(img, options=None, unclip_override=None, box_override
         _box, _uc = opts.det_db_box_thresh, opts.det_db_unclip_ratio
     eng = pool.get()
     try:
-        result = eng(img, box_thresh=_box, unclip_ratio=_uc)
+        try:
+            result = eng(img, box_thresh=_box, unclip_ratio=_uc)
+        except TypeError:
+            # rapidocr >= 3.0 moved threshold tuning into the constructor params
+            # and no longer accepts per-call kwargs — use the engine defaults
+            # instead of failing the whole panel.
+            result = eng(img)
     finally:
         pool.put(eng)
 
     regions = []  # type: List[_TextRegion]
-    # RapidOCR returns boxes/txts/scores as None (not empty sequences) when
-    # nothing is detected — verified directly against a blank test image.
-    if result is None or result.boxes is None or result.txts is None:
-        return regions
+    # The two RapidOCR packages expose DIFFERENT result shapes:
+    #   rapidocr >= 3        -> RapidOCROutput with .boxes/.txts/.scores
+    #   rapidocr_onnxruntime -> (result, elapse), result being
+    #                           [[box, text, score], ...] or None
+    # Reading `.boxes` unconditionally made every panel on a 1.x install die
+    # with "'tuple' object has no attribute 'boxes'" -> the cascade returned
+    # None -> "cannot unpack non-iterable NoneType object" -> every frame
+    # FAILED and the recap rendered with silent panels. Normalise both here.
+    if isinstance(result, tuple):
+        triples = (result[0] if result else None) or []
+        boxes = []  # type: List[Any]
+        txts = []  # type: List[Any]
+        scores = []  # type: List[Any]
+        for item in triples:
+            try:
+                boxes.append(item[0])
+                txts.append(item[1])
+                scores.append(item[2])
+            except (TypeError, IndexError, KeyError):
+                continue
+    else:
+        # RapidOCR returns boxes/txts/scores as None (not empty sequences) when
+        # nothing is detected — verified directly against a blank test image.
+        boxes = getattr(result, "boxes", None)
+        txts = getattr(result, "txts", None)
+        raw_scores = getattr(result, "scores", None)
+        if result is None or boxes is None or txts is None:
+            return regions
+        scores = raw_scores if raw_scores is not None else [0.0] * len(boxes)
 
-    scores = result.scores if result.scores is not None else [0.0] * len(result.boxes)
-    for box, text, score in zip(result.boxes, result.txts, scores):
+    for box, text, score in zip(boxes, txts, scores):
         if not text or not str(text).strip():
             continue
         try:
@@ -2443,7 +2473,7 @@ def _run_rapidocr_on_image(img, options=None, unclip_override=None, box_override
         except (TypeError, ValueError, IndexError):
             continue
         regions.append(_TextRegion(
-            text=str(text), confidence=float(score),
+            text=str(text), confidence=float(score or 0.0),
             x_min=min(xs), y_min=min(ys), y_max=max(ys), x_max=max(xs),
         ))
     return regions
@@ -3287,6 +3317,19 @@ def _ocr_with_cascade(img, options=None):
         except Exception as vlm_err:
             logger.warning("VLM OCR cascade tier failed gracefully: %s", vlm_err)
 
+        # Every engine tier can legitimately produce no candidate at all (e.g.
+        # RapidOCR unavailable AND PaddleOCR not initialised AND no Tesseract
+        # binary). Returning bare `None` made `_ocr_one` blow up with
+        # "cannot unpack non-iterable NoneType object", which reported every
+        # panel as a generic OCR exception instead of the real reason.
+        if best_tuple is None:
+            missing = []  # type: List[str]
+            if rapidocr_engine is None:
+                missing.append("rapidocr" + (" (%s)" % RAPIDOCR_ERROR if RAPIDOCR_ERROR else ""))
+            if ocr is None:
+                missing.append("paddleocr")
+            return ("", 0.0, 0, "FAILED", 0.0, [],
+                    "no_ocr_engine_available:" + (", ".join(missing) or "all_tiers_skipped"))
         return best_tuple
     except Exception as exc:
         logger.error("Unexpected error in _ocr_with_cascade: %s", exc, exc_info=True)

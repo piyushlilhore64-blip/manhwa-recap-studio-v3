@@ -1157,7 +1157,23 @@ async function processJob(jobId: string): Promise<void> {
   // If the service is up, we use it for ALL chapters. If not, we fall back
   // to VLM for ALL chapters (no per-chapter switching — that would waste
   // time re-initializing providers).
-  const ocrAvailable = await isPaddleOCRAvailable()
+  // Cold init of the OCR model on a small hosted CPU box takes ~2-3 minutes
+  // (measured on Render: RapidOCR ready ~2.5 min after container boot). The
+  // single bounded check used to give up after 45s, silently downgrading the
+  // WHOLE job to VLM providers — and with no VLM key every panel became
+  // "[transcription unavailable]", got silenced, and the render finished as a
+  // digitally silent video with no error. Keep the wait bounded, but long
+  // enough for a cold container, and log it so it never looks like a stall.
+  let ocrAvailable = await isPaddleOCRAvailable(45000)
+  for (let attempt = 1; !ocrAvailable && attempt <= 5; attempt++) {
+    await emitLog(
+      jobId,
+      'info',
+      'transcribe',
+      `OCR engine is still loading (cold start on a small instance takes ~2-3 min) — waiting, attempt ${attempt}/5.`,
+    )
+    ocrAvailable = await isPaddleOCRAvailable(30000)
+  }
   let ocrModelName = 'unknown'
   if (ocrAvailable) {
     ocrModelName = await getOCRModelName()
@@ -1200,6 +1216,30 @@ async function processJob(jobId: string): Promise<void> {
       const source = jobValue ? 'per-job' : 'global settings'
       console.log(`[VLM] Using ${source} ${envKey} for transcription`)
     }
+  }
+
+  // Fail honestly instead of rendering silence: with no OCR engine AND no VLM
+  // key there is literally no source of panel text, so every panel would be
+  // marked "[transcription unavailable]", silenced, and the user would wait
+  // through a full render to get a recap with no narration at all.
+  const hasVlmKey = Boolean(
+    job.groqKey || job.geminiKey || job.openRouterKey || job.zhipuKey || job.siliconFlowKey || job.openaiKey ||
+    process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY || process.env.OPENROUTER_API_KEY ||
+    process.env.ZHIPU_API_KEY || process.env.SILICONFLOW_API_KEY || process.env.OPENAI_API_KEY,
+  )
+  if (!ocrAvailable && !hasVlmKey) {
+    const msg =
+      'No panel-transcription engine is available: the local OCR service did not become ready and no VLM API key is configured. ' +
+      'Stopped before rendering so you do not wait through a job that would have no narration. ' +
+      'Check the OCR service health (/health on port 3002), then retry the job.'
+    await emitLog(jobId, 'error', 'transcribe', msg)
+    await db.job.update({
+      where: { id: jobId },
+      data: { status: 'error', stage: 'transcribe', error: msg, message: 'No transcription engine available' },
+    })
+    io.to(`job:${jobId}`).emit('error', { type: 'error', jobId, error: msg })
+    await emitStatus(jobId)
+    return
   }
 
   // Reload chapters to get the latest state.
