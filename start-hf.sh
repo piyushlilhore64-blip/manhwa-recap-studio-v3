@@ -33,7 +33,9 @@ PIPELINE_PID=$!
 
 # ---- 4. Start Next.js production server (port 3000) ------------------------
 echo "[start-hf] Starting Next.js on port 3000..."
-bun .next/standalone/server.js &
+# Render sets PORT for the public web service; Next.js must stay on 3000 so
+# Caddy can bind the public PORT and proxy to 3000/3001/3002.
+PORT=3000 HOSTNAME=0.0.0.0 bun .next/standalone/server.js &
 NEXT_PID=$!
 
 # ---- 5. Wait for services to be ready --------------------------------------
