@@ -6,7 +6,7 @@ import { outputVideoPath, fileExists } from "@/lib/paths";
 import { archiveVideo, isArchiveConfigured } from "@/lib/archive";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 min — large uploads can take a while
+export const maxDuration = 60; // Vercel function limit; large archive uploads may need an external worker.
 
 /**
  * POST /api/jobs/{id}/archive
