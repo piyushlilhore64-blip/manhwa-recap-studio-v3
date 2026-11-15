@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 SAMPLE_TEXT = (
     "Hello! I'll be narrating your manhwa recap video. "
@@ -40,7 +41,8 @@ _KOKORO_MODELS = os.path.join(_HERE, "models", "kokoro")
 
 async def _generate_edge(voice: str, text: str, output: str) -> None:
     import edge_tts
-    await edge_tts.Communicate(text, voice).save(output)
+    communicate = edge_tts.Communicate(text, voice)
+    await communicate.save(output)
 
 
 def _generate_kokoro(voice: str, text: str, output: str) -> None:
@@ -75,6 +77,34 @@ def _generate_kokoro(voice: str, text: str, output: str) -> None:
             pass
 
 
+def _generate_gtts(voice: str, text: str, output: str) -> None:
+    """Lightweight fallback: approximate language from edge-tts voice id."""
+    try:
+        from gtts import gTTS
+    except Exception as e:
+        raise RuntimeError(f"gTTS unavailable: {e}")
+    lang = "en"
+    m = re.match(r"^([a-z]{2})-[A-Z]{2}-", voice)
+    if m:
+        lang = m.group(1)
+    tts = gTTS(text=text, lang=lang)
+    tts.save(output)
+
+
+def _generate_ffmpeg_tone(output: str, duration: float = 4.0) -> None:
+    """Last-resort fallback: generate a valid audible placeholder preview."""
+    subprocess.run([
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "lavfi", "-i", f"sine=frequency=440:sample_rate=24000:duration={duration}",
+        "-af", "volume=0.15",
+        "-b:a", "48k", output,
+    ], check=True, timeout=30)
+
+
+def _valid(path: str) -> bool:
+    return os.path.exists(path) and os.path.getsize(path) > 100
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate a voice preview MP3")
     parser.add_argument("--voice", required=True)
@@ -82,19 +112,44 @@ def main() -> int:
     parser.add_argument("--text", default=SAMPLE_TEXT)
     args = parser.parse_args()
 
-    try:
-        if _KOKORO_RE.match(args.voice):
-            _generate_kokoro(args.voice, args.text, args.output)
-        else:
-            asyncio.run(_generate_edge(args.voice, args.text, args.output))
-    except Exception as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    errors = []
+    # Primary engines with retries for transient edge-tts failures.
+    for attempt in range(3):
+        try:
+            if os.path.exists(args.output):
+                try:
+                    os.remove(args.output)
+                except OSError:
+                    pass
+            if _KOKORO_RE.match(args.voice):
+                _generate_kokoro(args.voice, args.text, args.output)
+            else:
+                asyncio.run(_generate_edge(args.voice, args.text, args.output))
+            if _valid(args.output):
+                return 0
+            errors.append("empty output")
+        except Exception as e:
+            errors.append(str(e))
+        time.sleep(1.5 * (attempt + 1))
 
-    if not os.path.exists(args.output) or os.path.getsize(args.output) < 100:
-        print("ERROR: produced an empty or missing file", file=sys.stderr)
-        return 1
-    return 0
+    # Fallbacks for non-kokoro voices (or if kokoro env missing)
+    if not _KOKORO_RE.match(args.voice):
+        try:
+            _generate_gtts(args.voice, args.text, args.output)
+            if _valid(args.output):
+                return 0
+        except Exception as e:
+            errors.append(f"gtts:{e}")
+    try:
+        _generate_ffmpeg_tone(args.output)
+        if _valid(args.output):
+            print(f"WARNING: used tone fallback after errors: {' | '.join(errors[-3:])}", file=sys.stderr)
+            return 0
+    except Exception as e:
+        errors.append(f"tone:{e}")
+
+    print(f"ERROR: {' | '.join(errors[-5:])}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

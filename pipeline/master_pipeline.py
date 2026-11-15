@@ -294,7 +294,12 @@ def _ort_session(model_path, tag: str = ""):
 # distribution didn't actually contain examples of.
 TALL_IMAGE_SPLIT_ASPECT_RATIO = 2.0
 AUDIO_SAMPLE_RATE = 44100
-AUDIO_BITRATE = "192k"  # higher quality audio for narration
+AUDIO_BITRATE = "192k"
+
+# Font for drawtext (ffmpeg static builds in minimal envs lack fontconfig fonts)
+DRAWTEXT_FONTFILE = str((Path(__file__).resolve().parent.parent / 'assets' / 'fonts' / 'DejaVuSans.ttf'))
+_DRAWTEXT_FONT_OPT = f":fontfile='{DRAWTEXT_FONTFILE}'" if Path(DRAWTEXT_FONTFILE).exists() else ""
+  # higher quality audio for narration
 SILENT_FRAME_DURATION = 1.4  # seconds a no-text panel holds on screen — deliberately SHORTER
                           # than narrated panels (MIN_FRAME_DURATION) so text-less art panels don't
                           # drag. Lowered from 2.0: real jobs over-sliced pages into many panels and
@@ -6704,12 +6709,13 @@ def render_chapter(
     _tune = "stillimage"
     if getattr(cfg, "watermark", None):
         wm = str(cfg.watermark).replace("\\", "").replace("'", "").replace(":", " ")
+        font_opt = _DRAWTEXT_FONT_OPT if '_DRAWTEXT_FONT_OPT' in globals() else ''
         video_filters += (
-            f",drawtext=text='{wm}':fontcolor=white@0.55:fontsize=34:"
+            f",drawtext=text='{wm}'{font_opt}:fontcolor=white@0.55:fontsize=34:"
             f"shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w-tw-32:y=h-th-28"
         )
 
-    # NOTE on -vsync vfr (not "-r FPS"): forcing a constant output frame
+    # NOTE on VFR output (not "-r FPS"): forcing a constant output frame
     # rate makes ffmpeg duplicate frames to fill each image's declared
     # `duration`, and that duplication math compounds across multiple
     # concat-demuxer duration entries — verified directly: a 3-segment
@@ -6718,9 +6724,23 @@ def render_chapter(
     # was silently absorbed (the real video track got clipped down to the
     # correct audio length), which is why it stayed hidden — but the
     # no-audio path has no "-shortest" to hide behind and shipped the
-    # inflated-duration video as-is. "-vsync vfr" keeps each image's own
-    # declared duration exactly (no forced duplication), which is also the
+    # inflated-duration video as-is. VFR keeps each image's own declared
+    # duration exactly (no forced duplication), which is also the
     # semantically correct representation for a static-panel slideshow.
+    # Newer ffmpeg (7+) uses -fps_mode vfr; older builds use -vsync vfr.
+    _vfr_args = ["-fps_mode", "vfr"]
+    try:
+        _h = subprocess.run(["ffmpeg", "-h", "full"], capture_output=True, text=True, timeout=10)
+        _help = (_h.stdout or "") + (_h.stderr or "")
+        if "fps_mode" not in _help:
+            _h2 = subprocess.run(["ffmpeg", "-h"], capture_output=True, text=True, timeout=10)
+            _help = (_h2.stdout or "") + (_h2.stderr or "")
+        if "fps_mode" not in _help and "-vsync" in _help:
+            _vfr_args = ["-vsync", "vfr"]
+        elif "fps_mode" not in _help:
+            _vfr_args = ["-vsync", "vfr"]
+    except Exception:
+        _vfr_args = ["-vsync", "vfr"]
     has_audio = bool(audio_path and audio_path.exists())
     if has_audio:
         cmd = [
@@ -6731,7 +6751,7 @@ def render_chapter(
             "-vf", video_filters,
             "-map", "0:v", "-map", "1:a",
             "-c:v", "libx264", "-preset", "veryfast", "-tune", _tune, "-crf", "20", "-pix_fmt", "yuv420p",
-            "-vsync", "vfr",
+            *_vfr_args,
             "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(AUDIO_SAMPLE_RATE),
             "-shortest",
             # Force the output muxer explicitly rather than letting ffmpeg
@@ -6750,7 +6770,7 @@ def render_chapter(
             "-i", str(concat_list),
             "-vf", video_filters,
             "-c:v", "libx264", "-preset", "veryfast", "-tune", _tune, "-crf", "20", "-pix_fmt", "yuv420p",
-            "-vsync", "vfr",
+            *_vfr_args,
             "-f", "mp4",
             str(tmp_path),
         ]
@@ -6926,7 +6946,7 @@ def generate_black_placeholder_chapter(
         "-f", "lavfi", "-i", f"color=c=black:s={CANVAS_W}x{CANVAS_H}:r={FPS}",
         "-f", "lavfi", "-i", f"anullsrc=r={AUDIO_SAMPLE_RATE}:cl=mono",
         "-t", dur_str,
-        "-vf", f"drawtext=text='{escaped_text}':fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2",
+        "-vf", f"drawtext=text='{escaped_text}'{_DRAWTEXT_FONT_OPT if '_DRAWTEXT_FONT_OPT' in globals() else ''}:fontcolor=white:fontsize=48:x=(w-text_w)/2:y=(h-text_h)/2",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
         "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-ar", str(AUDIO_SAMPLE_RATE),
         "-r", str(FPS),
@@ -7256,7 +7276,8 @@ def build_intro_video(cfg: "PipelineConfig", chapters: "List[Chapter]") -> Optio
     vf = f"scale={CANVAS_W}:{CANVAS_H},format=yuv420p,fps={FPS}"
     if getattr(cfg, "watermark", None):
         wm = str(cfg.watermark).replace("\\", "").replace("'", "").replace(":", " ")
-        vf += (f",drawtext=text='{wm}':fontcolor=white@0.55:fontsize=34:"
+        font_opt = _DRAWTEXT_FONT_OPT if '_DRAWTEXT_FONT_OPT' in globals() else ''
+        vf += (f",drawtext=text='{wm}'{font_opt}:fontcolor=white@0.55:fontsize=34:"
                f"shadowcolor=black@0.6:shadowx=2:shadowy=2:x=w-tw-32:y=h-th-28")
     run_ffmpeg([
         "ffmpeg", "-y",

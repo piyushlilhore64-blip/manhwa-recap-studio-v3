@@ -259,7 +259,15 @@ def _init_rapidocr() -> None:
         RAPIDOCR_READY = False
         RAPIDOCR_ERROR = None
         try:
-            from rapidocr import RapidOCR
+            try:
+                from rapidocr import RapidOCR  # type: ignore
+                try:
+                    from rapidocr import LangRec, ModelType, OCRVersion  # type: ignore
+                except Exception:
+                    LangRec = ModelType = OCRVersion = None  # type: ignore
+            except Exception:
+                from rapidocr_onnxruntime import RapidOCR  # type: ignore
+                LangRec = ModelType = OCRVersion = None  # type: ignore
             # Detection + recognition head: PP-OCRv5 mobile (det) + the
             # dedicated English PP-OCRv5 mobile rec (`en_PP-OCRv5_rec_mobile`).
             # Chosen by a 10-panel hand-transcribed bake-off (see
@@ -282,15 +290,15 @@ def _init_rapidocr() -> None:
                 eng = None
                 if not os.environ.get("RAPIDOCR_STOCK"):
                     try:
-                        from rapidocr import LangRec, ModelType, OCRVersion
-                        eng = RapidOCR(params={
-                            "Det.ocr_version": OCRVersion.PPOCRV5,
-                            "Det.model_type": ModelType.MOBILE,
-                            "Rec.ocr_version": OCRVersion.PPOCRV5,
-                            "Rec.model_type": ModelType.MOBILE,
-                            "Rec.lang_type": LangRec.EN,
-                            "EngineConfig.onnxruntime.intra_op_num_threads": _rapid_intra_op,
-                        })
+                        if LangRec is not None and ModelType is not None and OCRVersion is not None:
+                            eng = RapidOCR(params={
+                                "Det.ocr_version": OCRVersion.PPOCRV5,
+                                "Det.model_type": ModelType.MOBILE,
+                                "Rec.ocr_version": OCRVersion.PPOCRV5,
+                                "Rec.model_type": ModelType.MOBILE,
+                                "Rec.lang_type": LangRec.EN,
+                                "EngineConfig.onnxruntime.intra_op_num_threads": _rapid_intra_op,
+                            })
                     except Exception as _e:
                         logger.warning("RapidOCR PP-OCRv5 mobile unavailable (%s) — using stock", _e)
                 if eng is None:
