@@ -9,11 +9,18 @@ FROM ubuntu:22.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # ---- System dependencies ----------------------------------------------------
+# Caddy is not in the default Ubuntu 22.04 repos; add the official Caddy apt repo.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates gnupg debian-keyring debian-archive-keyring apt-transport-https \
+    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+    && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list \
+    && chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+    && chmod o+r /etc/apt/sources.list.d/caddy-stable.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     ffmpeg \
     caddy \
-    curl ca-certificates git \
+    git \
     libgl1 libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 

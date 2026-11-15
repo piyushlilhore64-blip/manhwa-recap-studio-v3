@@ -47,18 +47,22 @@ else
     echo "[start-hf] WARNING: Next.js not yet responding (may still be starting)"
 fi
 
-# ---- 6. Start Caddy reverse proxy (port 7860, main process) ----------------
-echo "[start-hf] Starting Caddy on port 7860 (main process)..."
-echo "[start-hf] App will be available at the Hugging Face Space URL."
+# ---- 6. Start Caddy reverse proxy (main process) ---------------------------
+# Render/other platforms set PORT for the public listener; HF Spaces uses 7860.
+# Next.js stays on internal port 3000 (ENV PORT=3000 in Dockerfile).
+CADDY_PORT="${CADDY_PORT:-${PORT:-7860}}"
+export CADDY_PORT
+echo "[start-hf] Starting Caddy on port $CADDY_PORT (main process)..."
+echo "[start-hf] App will be available at the service URL."
 caddy run --config Caddyfile.docker --adapter caddyfile &
 CADDY_PID=$!
 
 # ---- 7. Keep the container alive -------------------------------------------
-# If any service crashes, the container stops and HF Spaces restarts it.
+# If any service crashes, the container stops and the platform restarts it.
 echo "[start-hf] All services started. Container is live."
 echo "  - PaddleOCR:       PID $OCR_PID (port 3002)"
 echo "  - Pipeline-service: PID $PIPELINE_PID (port 3001)"
 echo "  - Next.js:        PID $NEXT_PID (port 3000)"
-echo "  - Caddy:          PID $CADDY_PID (port 7860)"
+echo "  - Caddy:          PID $CADDY_PID (port $CADDY_PORT)"
 
 wait
