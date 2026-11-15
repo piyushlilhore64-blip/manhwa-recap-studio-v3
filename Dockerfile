@@ -37,7 +37,9 @@ WORKDIR /app
 
 # Copy package files first (better Docker layer caching)
 COPY package.json bun.lock ./
+COPY prisma ./prisma
 COPY mini-services/pipeline-service/package.json mini-services/pipeline-service/bun.lock ./mini-services/pipeline-service/
+COPY mini-services/pipeline-service/prisma ./mini-services/pipeline-service/prisma
 COPY mini-services/paddleocr-service/requirements.txt ./mini-services/paddleocr-service/
 COPY pipeline/requirements.txt ./pipeline/requirements.txt
 
