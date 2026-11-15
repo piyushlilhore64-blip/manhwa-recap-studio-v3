@@ -66,6 +66,10 @@ ENV PYTHON_BIN=/opt/venv/bin/python3
 ENV NODE_ENV=production
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
+# Shared secret for the all-in-one container (Next.js <-> pipeline-service/socket.io).
+# Baked into the client bundle at build time; can be overridden at runtime via env.
+ENV PIPELINE_SECRET=docker-container-secret
+ENV NEXT_PUBLIC_PIPELINE_SECRET=docker-container-secret
 
 RUN mkdir -p /data/db /data/manhwa-data /data/cache
 

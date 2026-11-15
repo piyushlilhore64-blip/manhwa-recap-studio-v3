@@ -17,6 +17,15 @@ trap cleanup SIGTERM SIGINT
 
 cd /app
 
+# ---- 0. Shared pipeline secret ---------------------------------------------
+# Keep Next.js server-side calls and pipeline-service/internal auth aligned in
+# this single-container deployment. The browser bundle uses the build-time value
+# (NEXT_PUBLIC_PIPELINE_SECRET) for socket.io auth.
+: "${PIPELINE_SECRET:=${NEXT_PUBLIC_PIPELINE_SECRET:-docker-container-secret}}"
+export PIPELINE_SECRET
+echo "$PIPELINE_SECRET" > /app/.pipeline-secret
+chmod 600 /app/.pipeline-secret 2>/dev/null || true
+
 # ---- 1. Initialize database (creates tables if they don't exist) -----------
 echo "[start-hf] Initializing database..."
 bun run db:push 2>&1 || echo "[start-hf] db:push warning (tables may already exist)"
