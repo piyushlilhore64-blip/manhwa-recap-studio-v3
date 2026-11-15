@@ -10,6 +10,10 @@ interface Stats {
   totalChapters: number;
   totalImages: number;
   archivedJobs?: number;
+  // Jobs still queued/running. Without it the bar used totalJobs -
+  // completedJobs, which counted failed and cancelled jobs as "In Progress"
+  // forever.
+  activeJobs?: number;
 }
 
 interface PlatformStat {
@@ -120,7 +124,7 @@ export function StatsBar() {
     { icon: Film, label: "Videos", value: String(stats.completedJobs), color: "text-emerald-400", barColor: "bg-emerald-400" },
     { icon: Play, label: "Jobs", value: String(stats.totalJobs), color: "text-sky-400", barColor: "bg-sky-400" },
     { icon: ImageIcon, label: "Images", value: stats.totalImages.toLocaleString(), color: "text-amber-400", barColor: "bg-amber-400" },
-    { icon: Clock, label: "In Progress", value: String(stats.totalJobs - stats.completedJobs), color: "text-fuchsia-400", barColor: "bg-fuchsia-400" },
+    { icon: Clock, label: "In Progress", value: String(stats.activeJobs ?? 0), color: "text-fuchsia-400", barColor: "bg-fuchsia-400" },
   ];
 
   if (stats.archivedJobs && stats.archivedJobs > 0) {

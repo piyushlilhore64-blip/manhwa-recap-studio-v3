@@ -3040,6 +3040,42 @@ async function narrateImageBatchGemini(imgPaths: string[], batchStart: number): 
   throw lastErr
 }
 
+/**
+ * Vision model currently used for Groq calls, cached process-wide so a retired
+ * model id costs one /models lookup instead of one per batch.
+ */
+let _groqModelResolved: string | null = null
+
+/**
+ * Pick a usable model from the account's live /models list.
+ *
+ * Groq retires free-tier models regularly (llama-4-scout -> qwen3.6 -> qwen3.8
+ * in one release cycle); a stale id answers 404 model_not_found, which used to
+ * fail every panel. Preference order: qwen (vision-capable, verified against a
+ * real panel), then llama, then gpt-oss.
+ */
+async function resolveGroqVisionModel(apiKey: string, current: string): Promise<string | null> {
+  try {
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(10000),
+    })
+    if (!res.ok) return null
+    const data = await res.json() as { data?: Array<{ id?: string }> }
+    const ids = (data.data || [])
+      .map((m) => m.id)
+      .filter((id): id is string => typeof id === 'string' && id !== current)
+    return (
+      ids.find((id) => /qwen/i.test(id)) ||
+      ids.find((id) => /llama/i.test(id)) ||
+      ids.find((id) => /gpt-oss/i.test(id)) ||
+      null
+    )
+  } catch {
+    return null
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GROQ VLM — third provider, fastest option (LPU hardware, 30 req/min free).
 // Uses Groq's OpenAI-compatible API with a vision-capable model (Llama 4
@@ -3066,12 +3102,13 @@ async function narrateImageBatchGroq(imgPaths: string[], batchStart: number): Pr
   }
 
   const apiKey = process.env.GROQ_API_KEY!
-  // Groq's vision model. meta-llama/llama-4-scout was deprecated by Groq on
-  // 2026-06-17; qwen/qwen3.6-27b is Groq's own recommended migration target
-  // for vision workloads (check console.groq.com/docs/deprecations if this
-  // ever breaks again — Groq's free-tier model lineup changes frequently).
-  // Override via GROQ_VLM_MODEL env var if needed.
-  const model = process.env.GROQ_VLM_MODEL || 'qwen/qwen3.6-27b'
+  // Groq's vision model. meta-llama/llama-4-scout was retired on 2026-06-17 and
+  // the qwen3.6-27b that replaced it is gone too — this key's live /models list
+  // offers qwen/qwen3.8-27b, verified reading a real test panel. Groq rotates
+  // its free-tier lineup often, so a model that 404s falls back to a live one
+  // resolved from /models (once per process — see the catch block) instead of
+  // failing every panel. Override: GROQ_VLM_MODEL.
+  const model = _groqModelResolved || process.env.GROQ_VLM_MODEL || 'qwen/qwen3.8-27b'
   const url = 'https://api.groq.com/openai/v1/chat/completions'
 
   // Read + base64-encode each image.
@@ -3128,6 +3165,7 @@ async function narrateImageBatchGroq(imgPaths: string[], batchStart: number): Pr
   const MAX_RETRIES = 3
   const BASE_DELAY_MS = 2000
   let lastErr: unknown = null
+  let triedAutoModel = false
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
@@ -3171,6 +3209,19 @@ async function narrateImageBatchGroq(imgPaths: string[], batchStart: number): Pr
     } catch (err) {
       lastErr = err
       const msg = err instanceof Error ? err.message : String(err)
+      // The configured model may have been retired by Groq (their free-tier
+      // lineup changes often). Resolve a live one once and retry instead of
+      // marking every remaining panel FAILED over a stale model id.
+      if (!triedAutoModel && /\b404\b|model_not_found|does not exist|decommissioned|unknown model|not supported/i.test(msg)) {
+        triedAutoModel = true
+        const better = await resolveGroqVisionModel(apiKey, model)
+        if (better) {
+          _groqModelResolved = better
+          body.model = better
+          console.warn(`[VLM:groq] model '${model}' is not available on this key — switched to '${better}'`)
+          continue
+        }
+      }
       // 403 = forbidden (invalid key, model not available). Don't retry.
       if (msg.includes('403')) {
         throw err

@@ -75,6 +75,15 @@ export default function Home() {
     addViewed({ id: manga.id, title: manga.title, coverUrl: manga.coverUrl || "" });
     setSelectedManga(manga);
     setView("config");
+    // The config screen (chapters, voice, style…) lives only in component
+    // state, so a reload used to dump you back on the search page and lose the
+    // manga you had just picked. Keep the selection for this tab; the config
+    // screen itself re-fetches the chapter list for it.
+    try {
+      sessionStorage.setItem("configManga", JSON.stringify(manga));
+    } catch {
+      // ignore — private browsing / storage disabled
+    }
   }, [addViewed]);
 
   const handleJobCreated = useCallback((jobId: string) => {
@@ -95,6 +104,7 @@ export default function Home() {
     setHistoryRefresh((n) => n + 1);
     try {
       localStorage.removeItem("activeJobId");
+      sessionStorage.removeItem("configManga");
     } catch {
       // ignore
     }
@@ -117,12 +127,28 @@ export default function Home() {
   useEffect(() => {
     let cancelled = false;
     let savedId: string | null = null;
+    let savedManga: MangadexManga | null = null;
     try {
       savedId = localStorage.getItem("activeJobId");
+      const raw = sessionStorage.getItem("configManga");
+      if (raw) {
+        const parsed = JSON.parse(raw) as MangadexManga;
+        if (parsed && typeof parsed.id === "string" && typeof parsed.title === "string") {
+          savedManga = parsed;
+        }
+      }
     } catch {
       savedId = null;
     }
-    if (!savedId) return;
+    // A job you were watching wins over a half-filled config screen; otherwise
+    // put the config screen back so a refresh no longer costs you the manga.
+    if (!savedId) {
+      if (savedManga) {
+        setSelectedManga(savedManga);
+        setView("config");
+      }
+      return;
+    }
 
     fetch(`/api/jobs/${savedId}`)
       .then(async (r) => ({ status: r.status, data: r.ok ? await r.json() : null }))
